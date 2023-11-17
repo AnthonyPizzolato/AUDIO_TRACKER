@@ -78,6 +78,13 @@ volatile int controlTurn=0;
 volatile int controlTilt=0;
 volatile int motor_dispTurn=0;
 volatile int motor_dispTilt=0;
+volatile uint16_t microphone_reading[3]; 
+volatile bool detected[3]={false,false,false}; 
+volatile long cycle_detected[3]={0,0,0};
+volatile int cycle12=0;
+volatile int cycle23=0;
+volatile int cycle13=0;
+volatile int cycle=0;
 
 
 void on_pwm_wrap() {
@@ -102,6 +109,44 @@ void on_pwm_wrap() {
     PT_SEM_SIGNAL(pt, &vga_semaphore);
 }
 
+// Timer ISR
+bool repeating_timer_callback(struct repeating_timer *t) {
+	// DDS phase and sine table lookup
+    bool all_detected=false;
+    for(int i=0;i<3;i++)
+        adc_read();
+
+        
+
+    for(int i=0;i<3;i++){
+        microphone_reading[i] = adc_fifo_get();
+    }
+    for(int i=0;i<3;i++){
+        if(detected[i]==true){
+            
+        }
+        else if(microphone_reading[i] >2500 || microphone_reading[i]<2000){
+            detected[i]=true;
+            cycle_detected[i]=cycle;
+            all_detected=true;
+            for(int y=0;y<3;y++){
+                if(detected[y]==false)
+                    all_detected=false;
+            }
+            
+    }
+    }
+    if(all_detected){
+        for(int i=0;i<3;i++)
+            detected[i]=false;
+        cycle12=cycle_detected[0]-cycle_detected[1];
+        cycle13=cycle_detected[0]-cycle_detected[2];
+        cycle23=cycle_detected[1]-cycle_detected[2];
+        
+    }
+    cycle++;
+    return true;
+}
 
 static PT_THREAD (protothread_vga(struct pt *pt))
 {
@@ -197,7 +242,6 @@ static PT_THREAD (protothread_vga(struct pt *pt))
 }
 
 
-
 // User input thread. User can change draw speed
 static PT_THREAD (protothread_serial(struct pt *pt))
 {
@@ -207,7 +251,13 @@ static PT_THREAD (protothread_serial(struct pt *pt))
     static float float_in ;
 
     while(1) {
-        sprintf(pt_serial_out_buffer, "input I if you want to tilt and U if you want to turn " );
+        
+        
+        // sprintf(pt_serial_out_buffer, "input I if you want to tilt and U if you want to turn \r\n" );
+        // serial_write ;
+        sprintf(pt_serial_out_buffer, "microphone readings : %d,%d,%d \r\n",microphone_reading[0],microphone_reading[1],microphone_reading[2] );
+        serial_write ;
+        sprintf(pt_serial_out_buffer, "cycle readings : %d,%d,%d \r\n",cycle12,cycle13,cycle23 );
         serial_write ;
 
         serial_read;
@@ -254,17 +304,20 @@ int main() {
     // Initialize VGA
     initVGA() ;
 
-    ////////////////////////////////////////////////////////////////////////
-    ///////////////////////// I2C CONFIGURATION ////////////////////////////
-    // i2c_init(I2C_CHAN, I2C_BAUD_RATE) ;
-    // gpio_set_function(SDA_PIN, GPIO_FUNC_I2C) ;
-    // gpio_set_function(SCL_PIN, GPIO_FUNC_I2C) ;
-    // gpio_pull_up(SDA_PIN) ;
-    // gpio_pull_up(SCL_PIN) ;
+    //Initialize ADC
+     adc_init();
 
-    // // MPU6050 initialization
-    // mpu6050_reset();
-    // mpu6050_read_raw(acceleration, gyro);
+      // Make sure GPIO is high-impedance, no pullups etc
+    adc_gpio_init(26);
+    adc_gpio_init(27);
+    adc_gpio_init(28);
+    // Select ADC input 0 (GPIO26)
+    adc_fifo_setup(true,false,10,false,false);
+    adc_set_round_robin	(7)	;
+
+    struct repeating_timer timer;
+    //timer to get readings every 25 microseconds
+    add_repeating_timer_us(-25, repeating_timer_callback, NULL, &timer);
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////// PWM CONFIGURATION ////////////////////////////
