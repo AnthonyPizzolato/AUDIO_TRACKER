@@ -35,6 +35,7 @@
 // Include PICO libraries
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/divider.h"
 // Include hardware libraries
 #include "hardware/pwm.h"
 #include "hardware/dma.h"
@@ -68,7 +69,7 @@ char screentext[40];
 #define WRAPVAL 50000
 #define CLKDIV  50.0
 #define PI 3.14159265359
-
+#define CYCLELIMIT 1000
 
 //variables for motor control 
 uint slice_num ;
@@ -79,12 +80,15 @@ volatile int controlTilt=0;
 volatile int motor_dispTurn=0;
 volatile int motor_dispTilt=0;
 volatile uint16_t microphone_reading[3]; 
+volatile uint16_t max_reading[3]; 
 volatile bool detected[3]={false,false,false}; 
 volatile long cycle_detected[3]={0,0,0};
-volatile int cycle12=0;
-volatile int cycle23=0;
-volatile int cycle13=0;
+volatile int cycle_after[3]={0,0,0};
 volatile int cycle=0;
+volatile int first_cycle=0;
+volatile int pwm_turn=0;
+volatile int num_detected=0;
+
 
 
 void on_pwm_wrap() {
@@ -101,9 +105,18 @@ void on_pwm_wrap() {
         motor_dispTilt = motor_dispTilt + ((controlTilt - motor_dispTilt)>>4) ;
         motor_dispTurn = motor_dispTurn + ((controlTurn - motor_dispTurn)>>4) ;
  
+    // logic to control the pwm from the microphone
+    //20,000 - -20,000
+    int turn=cycle_after[0]-cycle_after[1];
+    turn +=CYCLELIMIT;
+    turn=(int)(turn*2.5);
+    turn+=1000;
+    pwm_turn=turn;
 
     pwm_set_chan_level(slice_num, PWM_CHAN_B, controlTilt);
-     pwm_set_chan_level(slice_num, PWM_CHAN_A, controlTurn);
+    pwm_set_chan_level(slice_num, PWM_CHAN_A, pwm_turn);
+    
+
 
     // Signal VGA to draw
     PT_SEM_SIGNAL(pt, &vga_semaphore);
@@ -111,7 +124,6 @@ void on_pwm_wrap() {
 
 // Timer ISR
 bool repeating_timer_callback(struct repeating_timer *t) {
-	// DDS phase and sine table lookup
     bool all_detected=false;
     for(int i=0;i<3;i++)
         adc_read();
@@ -121,11 +133,15 @@ bool repeating_timer_callback(struct repeating_timer *t) {
     for(int i=0;i<3;i++){
         microphone_reading[i] = adc_fifo_get();
     }
+    int prev_num_detected=num_detected;
+    int index_detected=0;
     for(int i=0;i<3;i++){
+        
         if(detected[i]==true){
-            
+            num_detected++;
+            index_detected=i;
         }
-        else if(microphone_reading[i] >2500 || microphone_reading[i]<2000){
+        else if(microphone_reading[i] >3100 || microphone_reading[i]<2000){
             detected[i]=true;
             cycle_detected[i]=cycle;
             all_detected=true;
@@ -134,14 +150,32 @@ bool repeating_timer_callback(struct repeating_timer *t) {
                     all_detected=false;
             }
             
+        }
     }
+    if(num_detected==1||prev_num_detected==0){
+        first_cycle=cycle_detected[index_detected];
+    }
+    if(cycle-first_cycle==CYCLELIMIT){
+        all_detected=true;
+        for(int x=0;x<3;x++){
+            if(detected[x]==false){
+                cycle_detected[x]=cycle;
+            }
+        }
     }
     if(all_detected){
-        for(int i=0;i<3;i++)
+        int min_value=cycle_detected[0];
+        num_detected=0;                                                                                                      
+        for(int i=0;i<3;i++){
             detected[i]=false;
-        cycle12=cycle_detected[0]-cycle_detected[1];
-        cycle13=cycle_detected[0]-cycle_detected[2];
-        cycle23=cycle_detected[1]-cycle_detected[2];
+            if(min_value>cycle_detected[i]){
+                min_value=cycle_detected[i];
+            }
+        }
+        for(int i=0;i<3;i++){
+            cycle_after[i]=cycle_detected[i]-min_value;
+            }
+
         
     }
     cycle++;
@@ -253,11 +287,13 @@ static PT_THREAD (protothread_serial(struct pt *pt))
     while(1) {
         
         
-        // sprintf(pt_serial_out_buffer, "input I if you want to tilt and U if you want to turn \r\n" );
+        //sprintf(pt_serial_out_buffer, "input I if you want to tilt and U if you want to turn \r\n" );
         // serial_write ;
         sprintf(pt_serial_out_buffer, "microphone readings : %d,%d,%d \r\n",microphone_reading[0],microphone_reading[1],microphone_reading[2] );
         serial_write ;
-        sprintf(pt_serial_out_buffer, "cycle readings : %d,%d,%d \r\n",cycle12,cycle13,cycle23 );
+        sprintf(pt_serial_out_buffer, "turn readings : %d, \r\n",pwm_turn);
+        serial_write ;
+        sprintf(pt_serial_out_buffer, "cycle readings : %d,%d,%d \r\n",cycle_after[0],cycle_after[1],cycle_after[2] );
         serial_write ;
 
         serial_read;
@@ -300,12 +336,11 @@ int main() {
 
     // Initialize stdio
     stdio_init_all();
-
-    // Initialize VGA
-    initVGA() ;
-
     //Initialize ADC
-     adc_init();
+    adc_init();
+    
+
+    
 
       // Make sure GPIO is high-impedance, no pullups etc
     adc_gpio_init(26);
@@ -353,6 +388,8 @@ int main() {
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////////// ROCK AND ROLL ////////////////////////////
     ////////////////////////////////////////////////////////////////////////
+    // Initialize VGA
+    initVGA() ;
     // start core 1 
     multicore_reset_core1();
     multicore_launch_core1(core1_entry);
