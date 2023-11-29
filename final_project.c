@@ -219,19 +219,7 @@ static PT_THREAD (protothread_vga(struct pt *pt))
     writeString(screentext) ;
 
    // Draw top plot
-    drawHLine(75, 230, 5, CYAN) ;
-    drawHLine(75, 155, 5, CYAN) ;
-    drawHLine(75, 80, 5, CYAN) ;
-    drawVLine(80, 80, 150, CYAN) ;
-    sprintf(screentext, "+2500") ;
-    setCursor(50, 150) ;
-    writeString(screentext) ;
-    sprintf(screentext, "+2500") ;
-    setCursor(45, 75) ;
-    writeString(screentext) ;
-    sprintf(screentext, "0") ;
-    setCursor(45, 225) ;
-    writeString(screentext) ;
+    drawCircle(400, 350, short 200, GREEN) 
     
 
     while (true) {
