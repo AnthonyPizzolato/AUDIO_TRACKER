@@ -69,7 +69,8 @@ char screentext[40];
 #define WRAPVAL 50000
 #define CLKDIV  50.0
 #define PI 3.14159265359
-#define CYCLELIMIT 1000
+#define CYCLELIMIT 21676
+#define THRESHOLD 2600
 
 //variables for motor control 
 uint slice_num ;
@@ -88,8 +89,9 @@ volatile int cycle=0;
 volatile int first_cycle=0;
 volatile int pwm_turn=0;
 volatile int num_detected=0;
-
-
+volatile int magnitude=100;
+volatile float angle= 0;
+const float conversion_factor = 3.3f / (1 << 12);
 
 void on_pwm_wrap() {
 
@@ -109,7 +111,7 @@ void on_pwm_wrap() {
     //20,000 - -20,000
     int turn=cycle_after[0]-cycle_after[1];
     turn +=CYCLELIMIT;
-    turn=(int)(turn*2.5);
+    turn=(int)(turn*12.5);
     turn+=1000;
     pwm_turn=turn;
 
@@ -122,64 +124,213 @@ void on_pwm_wrap() {
     PT_SEM_SIGNAL(pt, &vga_semaphore);
 }
 
-// Timer ISR
-bool repeating_timer_callback(struct repeating_timer *t) {
-    bool all_detected=false;
-    for(int i=0;i<3;i++)
-        adc_read();
-
-        
-
-    for(int i=0;i<3;i++){
-        microphone_reading[i] = adc_fifo_get();
-    }
-    int prev_num_detected=num_detected;
-    int index_detected=0;
-    for(int i=0;i<3;i++){
-        
-        if(detected[i]==true){
-            num_detected++;
-            index_detected=i;
+// polling 
+static PT_THREAD (protothread_gpio(struct pt *pt)) {
+    PT_BEGIN(pt) ;
+    
+    while(true){
+        bool gp26=false;
+        bool gp27=false;
+        bool gp28=false;
+        //cycle=0;
+        adc_set_round_robin	(7)	;
+        while(!gp26||!gp27||!gp28){
+            microphone_reading[0]=adc_read();
+            microphone_reading[1]=adc_read();
+            microphone_reading[2]=adc_read();
+            gp26= microphone_reading[0]>THRESHOLD;
+            gp27=microphone_reading[1] >THRESHOLD;
+            gp28=microphone_reading[2] >THRESHOLD;
+            cycle++;
         }
-        else if(microphone_reading[i] >3100 || microphone_reading[i]<2000){
-            detected[i]=true;
-            cycle_detected[i]=cycle;
-            all_detected=true;
-            for(int y=0;y<3;y++){
-                if(detected[y]==false)
-                    all_detected=false;
+        if(gp26&&gp27&&gp28){
+            cycle_detected[0]=cycle;
+            cycle_detected[1]=cycle;
+            cycle_detected[2]=cycle;
+        }
+        else if(gp26&&gp27){
+            cycle_detected[0]=cycle;
+            cycle_detected[1]=cycle;
+            adc_set_round_robin	(4)	;
+            while(!gp28){
+                    gp28=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[2]=cycle;
+        }
+        else if(gp26&&gp28){
+            cycle_detected[0]=cycle;
+            cycle_detected[2]=cycle;
+            adc_set_round_robin	(2)	;
+            while(!gp27){
+                    gp27=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[1]=cycle;
+        }
+        else if(gp27&&gp28){
+            cycle_detected[1]=cycle;
+            cycle_detected[2]=cycle;
+            adc_set_round_robin	(1)	;
+            while(!gp26){
+                    gp26=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[0]=cycle;
+        }
+        else if(gp26){
+            cycle_detected[0]=cycle;
+            adc_set_round_robin	(6)	;
+            while(!gp27||!gp28){
+                gp27=adc_read() >THRESHOLD;
+                gp28=adc_read() >THRESHOLD;
+                cycle++;
+            }
+            if(gp27&&gp28){
+                cycle_detected[1]=cycle;
+                cycle_detected[2]=cycle;
+            }
+            else if(gp27){
+                cycle_detected[1]=cycle;
+                adc_set_round_robin	(4)	;
+                while(!gp28){
+                    
+                    gp28=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[2]=cycle;
+            }
+            else{
+                cycle_detected[2]=cycle;
+                adc_set_round_robin	(2)	;
+                while(!gp27){
+
+                    gp27=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[1]=cycle;
             }
             
         }
-    }
-    if(num_detected==1||prev_num_detected==0){
-        first_cycle=cycle_detected[index_detected];
-    }
-    if(cycle-first_cycle==CYCLELIMIT){
-        all_detected=true;
-        for(int x=0;x<3;x++){
-            if(detected[x]==false){
-                cycle_detected[x]=cycle;
+        else if(gp27){
+            cycle_detected[1]=cycle;
+            adc_set_round_robin	(5)	;
+            while(!gp26||!gp28){
+                gp26=adc_read() >THRESHOLD;
+                gp28=adc_read() >THRESHOLD;
+                cycle++;
+            }
+             if(gp26&&gp28){
+                cycle_detected[0]=cycle;
+                cycle_detected[2]=cycle;
+            }
+            else if(gp26){
+                cycle_detected[0]=cycle;
+                adc_set_round_robin	(4)	;
+                while(!gp28){
+
+                    gp28=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[2]=cycle;
+            }
+            else{
+                cycle_detected[2]=cycle;
+                adc_set_round_robin	(1)	;
+                while(!gp26){
+
+                    gp26=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[0]=cycle;
             }
         }
-    }
-    if(all_detected){
-        int min_value=cycle_detected[0];
-        num_detected=0;                                                                                                      
-        for(int i=0;i<3;i++){
-            detected[i]=false;
-            if(min_value>cycle_detected[i]){
-                min_value=cycle_detected[i];
+        else{
+            cycle_detected[2]=cycle;
+            adc_set_round_robin	(3)	;
+            while(!gp26||!gp27){
+                gp26=adc_read() >THRESHOLD;
+                gp27=adc_read() >THRESHOLD;
+                cycle++;
+            }
+              if(gp26&&gp27){
+                cycle_detected[0]=cycle;
+                cycle_detected[1]=cycle;
+            }
+            else if(gp26){
+                cycle_detected[0]=cycle;
+                adc_set_round_robin	(2)	;
+                while(!gp27){
+
+                    gp27=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[1]=cycle;
+            }
+            else{
+                cycle_detected[1]=cycle;
+                adc_set_round_robin	(1)	;
+                while(!gp26){
+
+                    gp26=adc_read() >THRESHOLD;
+                    cycle++;
+                }
+                cycle_detected[0]=cycle;
             }
         }
-        for(int i=0;i<3;i++){
-            cycle_after[i]=cycle_detected[i]-min_value;
+
+
+        // bool all_detected=false;
+        // for(int i=0;i<3;i++){
+        //     microphone_reading[i] = gpio_get(26+i);
+        // }
+        // int prev_num_detected=num_detected;
+        // int index_detected=0;
+        // for(int i=0;i<3;i++){
+        //     if(detected[i]==true){
+        //         num_detected++;
+        //         index_detected=i;
+        //     }
+        //     else if(serial_write ;) {
+        //         detected[i]=true;
+        //         cycle_detected[i]=cycle;
+        //         all_detected=true;
+        //         for(int y=0;y<3;y++){
+        //             if(detected[y]==false)
+        //                 all_detected=false;
+        //         }
+            
+        //     }
+        // }
+        // if(num_detected==1||prev_num_detected==0){
+        //     first_cycle=cycle_detected[index_detected];
+        // }
+        // if(cycle-first_cycle==CYCLELIMIT){
+        //     all_detected=true;
+        //     for(int x=0;x<3;x++){
+        //         if(detected[x]==false){
+        //             cycle_detected[x]=cycle;
+        //         }
+        //     }
+        // }
+        //if(all_detected){
+            int min_value=cycle_detected[0];
+            num_detected=0;                                                                                                      
+            for(int i=0;i<3;i++){
+                detected[i]=false;
+                if(min_value>cycle_detected[i]){
+                    min_value=cycle_detected[i];
+                }
+            }
+            for(int i=0;i<3;i++){
+                cycle_after[i]=cycle_detected[i]-min_value;
             }
 
+        //}
+        cycle++;
         
     }
-    cycle++;
-    return true;
+    PT_END(pt);
 }
 
 static PT_THREAD (protothread_vga(struct pt *pt))
@@ -204,23 +355,12 @@ static PT_THREAD (protothread_vga(struct pt *pt))
     setTextColor(WHITE);
 
     // Draw bottom plot
-    drawHLine(75, 430, 5, CYAN) ;
-    drawHLine(75, 355, 5, CYAN) ;
-    drawHLine(75, 280, 5, CYAN) ;
-    drawVLine(80, 280, 150, CYAN) ;
-    sprintf(screentext, "2500") ;
-    setCursor(50, 350) ;
-    writeString(screentext) ;
-    sprintf(screentext, "+2500") ;
-    setCursor(50, 280) ;
-    writeString(screentext) ;
-    sprintf(screentext, "0") ;
-    setCursor(50, 425) ;
-    writeString(screentext) ;
+
 
    // Draw top plot
-    drawCircle(400, 350, short 200, GREEN) 
-    
+    drawCircle(300,200,150,GREEN);
+    drawVLine(300, 50, 300, GREEN) ;
+    drawHLine(150, 200, 300, GREEN) ;
 
     while (true) {
         // Wait on semaphore
@@ -239,24 +379,27 @@ static PT_THREAD (protothread_vga(struct pt *pt))
 
 
             // Erase a column
-            drawVLine(xcoord, 0, 480, BLACK) ;
-
-
+            fillCircle(300,200,149,BLACK);
+            drawCircle(300,200,150,GREEN);
+            drawVLine(300, 50, 300, GREEN) ;
+            drawHLine(150, 200, 300, GREEN) ;
+            int diff=cycle_after[0]-cycle_after[1];
+            angle=((double)diff)/CYCLELIMIT;
+            angle*=PI/2;
+            angle+=PI/2;
+            
             // Draw bottom plot (multiply by 800)
-            drawPixel(xcoord, 490 - (int)(0.2000*((float)((fix2float15(motor_dispTurn))))), RED) ;
+            int xcoord = magnitude*cos(angle)+300;
+            int ycoord = magnitude*sin(angle)+200;
+            
 
             // Draw top plot
-            drawPixel(xcoord, 230 - (int)(2000*((float)((fix2float15(motor_dispTilt))))), GREEN) ;
+            fillCircle(xcoord, ycoord, 10, RED);
 
                 // Read the IMU
            
             // Update horizontal cursor
-            if (xcoord < 609) {
-                xcoord += 1 ;
-            }
-            else {
-                xcoord = 81 ;
-            }
+            
         }
     }
     // Indicate end of thread
@@ -277,11 +420,11 @@ static PT_THREAD (protothread_serial(struct pt *pt))
         
         //sprintf(pt_serial_out_buffer, "input I if you want to tilt and U if you want to turn \r\n" );
         // serial_write ;
-        sprintf(pt_serial_out_buffer, "microphone readings : %d,%d,%d \r\n",microphone_reading[0],microphone_reading[1],microphone_reading[2] );
+        sprintf(pt_serial_out_buffer, "microphone readings: %d,%d,%d \r\n",cycle_detected[0],cycle_detected[1],cycle_detected[2] );
         serial_write ;
         sprintf(pt_serial_out_buffer, "turn readings : %d, \r\n",pwm_turn);
         serial_write ;
-        sprintf(pt_serial_out_buffer, "cycle readings : %d,%d,%d \r\n",cycle_after[0],cycle_after[1],cycle_after[2] );
+        sprintf(pt_serial_out_buffer, "cycle readings : %f,%f,%f \r\n",microphone_reading[0]*conversion_factor,microphone_reading[1]*conversion_factor,microphone_reading[2]*conversion_factor);
         serial_write ;
 
         serial_read;
@@ -315,13 +458,13 @@ static PT_THREAD (protothread_serial(struct pt *pt))
 
 
 void core1_entry() {
-    pt_add_thread(protothread_vga) ;
+    pt_add_thread(protothread_gpio) ;
     pt_schedule_start ;
 }
 
 
 int main() {
-
+    set_sys_clock_khz(250000,true);
     // Initialize stdio
     stdio_init_all();
     //Initialize ADC
@@ -330,17 +473,23 @@ int main() {
 
     
 
-      // Make sure GPIO is high-impedance, no pullups etc
+    //   // Make sure GPIO is high-impedance, no pullups etc
     adc_gpio_init(26);
     adc_gpio_init(27);
     adc_gpio_init(28);
-    // Select ADC input 0 (GPIO26)
-    adc_fifo_setup(true,false,10,false,false);
+    // // Select ADC input 0 (GPIO26)
+    // adc_fifo_setup(true,false,10,false,false);
     adc_set_round_robin	(7)	;
-
-    struct repeating_timer timer;
-    //timer to get readings every 25 microseconds
-    add_repeating_timer_us(-25, repeating_timer_callback, NULL, &timer);
+    adc_set_clkdiv (50000);
+    // gpio_init(26) ;
+    // gpio_init(27) ;
+    // gpio_init(28) ;
+    // gpio_set_dir(26, GPIO_IN) ;
+    // gpio_set_dir(27, GPIO_IN) ;
+    // gpio_set_dir(28, GPIO_IN) ;
+    //struct repeating_timer timer;
+    //timer to get readings every 1 microseconds
+   // add_repeating_timer_us(-17, repeating_timer_callback, NULL, &timer);
 
     ////////////////////////////////////////////////////////////////////////
     ///////////////////////// PWM CONFIGURATION ////////////////////////////
@@ -384,7 +533,7 @@ int main() {
 
     // start core 0
     pt_add_thread(protothread_serial) ;
-
+    pt_add_thread(protothread_vga) ;
     pt_schedule_start ;
 
 }
