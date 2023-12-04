@@ -43,6 +43,8 @@
 #include "hardware/adc.h"
 #include "hardware/pio.h"
 #include "hardware/i2c.h"
+#include "hardware/clocks.h"
+#include "hardware/structs/clocks.h"
 // Include custom libraries
 #include "vga_graphics.h"
 #include "mpu6050.h"
@@ -69,8 +71,8 @@ char screentext[40];
 #define WRAPVAL 50000
 #define CLKDIV  50.0
 #define PI 3.14159265359
-#define CYCLELIMIT 21676
-#define THRESHOLD 2600
+#define CYCLELIMIT 143
+#define THRESHOLD 1800
 
 //variables for motor control 
 uint slice_num ;
@@ -134,8 +136,10 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
         bool gp28=false;
         //cycle=0;
         adc_set_round_robin	(7)	;
-        while(!gp26||!gp27||!gp28){
+        while(!(gp26||gp27||gp28)){
+            
             microphone_reading[0]=adc_read();
+            
             microphone_reading[1]=adc_read();
             microphone_reading[2]=adc_read();
             gp26= microphone_reading[0]>THRESHOLD;
@@ -143,6 +147,9 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             gp28=microphone_reading[2] >THRESHOLD;
             cycle++;
         }
+        first_cycle=cycle;
+        int last_cycle=first_cycle+CYCLELIMIT;
+        gpio_put(25, 0);
         if(gp26&&gp27&&gp28){
             cycle_detected[0]=cycle;
             cycle_detected[1]=cycle;
@@ -152,7 +159,7 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             cycle_detected[0]=cycle;
             cycle_detected[1]=cycle;
             adc_set_round_robin	(4)	;
-            while(!gp28){
+            while(!gp28&&last_cycle>=cycle){
                     gp28=adc_read() >THRESHOLD;
                     cycle++;
                 }
@@ -162,7 +169,7 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             cycle_detected[0]=cycle;
             cycle_detected[2]=cycle;
             adc_set_round_robin	(2)	;
-            while(!gp27){
+            while(!gp27&&last_cycle>=cycle){
                     gp27=adc_read() >THRESHOLD;
                     cycle++;
                 }
@@ -172,7 +179,7 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             cycle_detected[1]=cycle;
             cycle_detected[2]=cycle;
             adc_set_round_robin	(1)	;
-            while(!gp26){
+            while(!gp26&&last_cycle>=cycle){
                     gp26=adc_read() >THRESHOLD;
                     cycle++;
                 }
@@ -181,19 +188,19 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
         else if(gp26){
             cycle_detected[0]=cycle;
             adc_set_round_robin	(6)	;
-            while(!gp27||!gp28){
+            while(!(gp27||gp28)&&last_cycle>=cycle){
                 gp27=adc_read() >THRESHOLD;
                 gp28=adc_read() >THRESHOLD;
                 cycle++;
             }
-            if(gp27&&gp28){
+            if((gp27&&gp28)||last_cycle<cycle){
                 cycle_detected[1]=cycle;
                 cycle_detected[2]=cycle;
             }
             else if(gp27){
                 cycle_detected[1]=cycle;
                 adc_set_round_robin	(4)	;
-                while(!gp28){
+                while(!gp28&&last_cycle>=cycle){
                     
                     gp28=adc_read() >THRESHOLD;
                     cycle++;
@@ -203,7 +210,7 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             else{
                 cycle_detected[2]=cycle;
                 adc_set_round_robin	(2)	;
-                while(!gp27){
+                while(!gp27&&last_cycle>=cycle){
 
                     gp27=adc_read() >THRESHOLD;
                     cycle++;
@@ -215,19 +222,19 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
         else if(gp27){
             cycle_detected[1]=cycle;
             adc_set_round_robin	(5)	;
-            while(!gp26||!gp28){
+            while(!(gp26||gp28)&&last_cycle>=cycle){
                 gp26=adc_read() >THRESHOLD;
                 gp28=adc_read() >THRESHOLD;
                 cycle++;
             }
-             if(gp26&&gp28){
+             if((gp26&&gp28)||last_cycle<cycle){
                 cycle_detected[0]=cycle;
                 cycle_detected[2]=cycle;
             }
             else if(gp26){
                 cycle_detected[0]=cycle;
                 adc_set_round_robin	(4)	;
-                while(!gp28){
+                while(!gp28&&last_cycle>=cycle){
 
                     gp28=adc_read() >THRESHOLD;
                     cycle++;
@@ -237,7 +244,7 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             else{
                 cycle_detected[2]=cycle;
                 adc_set_round_robin	(1)	;
-                while(!gp26){
+                while(!gp26&&last_cycle>=cycle){
 
                     gp26=adc_read() >THRESHOLD;
                     cycle++;
@@ -248,19 +255,19 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
         else{
             cycle_detected[2]=cycle;
             adc_set_round_robin	(3)	;
-            while(!gp26||!gp27){
+            while(!(gp26||gp27)&&last_cycle>=cycle){
                 gp26=adc_read() >THRESHOLD;
                 gp27=adc_read() >THRESHOLD;
                 cycle++;
             }
-              if(gp26&&gp27){
+              if((gp26&&gp27)||last_cycle<cycle){
                 cycle_detected[0]=cycle;
                 cycle_detected[1]=cycle;
             }
             else if(gp26){
                 cycle_detected[0]=cycle;
                 adc_set_round_robin	(2)	;
-                while(!gp27){
+                while(!gp27&&last_cycle>=cycle){
 
                     gp27=adc_read() >THRESHOLD;
                     cycle++;
@@ -270,7 +277,7 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             else{
                 cycle_detected[1]=cycle;
                 adc_set_round_robin	(1)	;
-                while(!gp26){
+                while(!gp26&&last_cycle>=cycle){
 
                     gp26=adc_read() >THRESHOLD;
                     cycle++;
@@ -278,42 +285,8 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
                 cycle_detected[0]=cycle;
             }
         }
+        gpio_put(25, 1);
 
-
-        // bool all_detected=false;
-        // for(int i=0;i<3;i++){
-        //     microphone_reading[i] = gpio_get(26+i);
-        // }
-        // int prev_num_detected=num_detected;
-        // int index_detected=0;
-        // for(int i=0;i<3;i++){
-        //     if(detected[i]==true){
-        //         num_detected++;
-        //         index_detected=i;
-        //     }
-        //     else if(serial_write ;) {
-        //         detected[i]=true;
-        //         cycle_detected[i]=cycle;
-        //         all_detected=true;
-        //         for(int y=0;y<3;y++){
-        //             if(detected[y]==false)
-        //                 all_detected=false;
-        //         }
-            
-        //     }
-        // }
-        // if(num_detected==1||prev_num_detected==0){
-        //     first_cycle=cycle_detected[index_detected];
-        // }
-        // if(cycle-first_cycle==CYCLELIMIT){
-        //     all_detected=true;
-        //     for(int x=0;x<3;x++){
-        //         if(detected[x]==false){
-        //             cycle_detected[x]=cycle;
-        //         }
-        //     }
-        // }
-        //if(all_detected){
             int min_value=cycle_detected[0];
             num_detected=0;                                                                                                      
             for(int i=0;i<3;i++){
@@ -327,7 +300,7 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             }
 
         //}
-        cycle++;
+        
         
     }
     PT_END(pt);
@@ -353,14 +326,17 @@ static PT_THREAD (protothread_vga(struct pt *pt))
     // Draw the static aspects of the display
     setTextSize(1) ;
     setTextColor(WHITE);
-
+    setCursor(300, 50) ;
+    
+    sprintf(screentext, "Sound direction tracking") ;
+    writeString(screentext) ;
     // Draw bottom plot
 
 
    // Draw top plot
-    drawCircle(300,200,150,GREEN);
-    drawVLine(300, 50, 300, GREEN) ;
-    drawHLine(150, 200, 300, GREEN) ;
+    drawCircle(350,250,150,GREEN);
+    drawVLine(350, 100, 300, GREEN) ;
+    drawHLine(200, 250, 300, GREEN) ;
 
     while (true) {
         // Wait on semaphore
@@ -379,18 +355,25 @@ static PT_THREAD (protothread_vga(struct pt *pt))
 
 
             // Erase a column
-            fillCircle(300,200,149,BLACK);
-            drawCircle(300,200,150,GREEN);
-            drawVLine(300, 50, 300, GREEN) ;
-            drawHLine(150, 200, 300, GREEN) ;
-            int diff=cycle_after[0]-cycle_after[1];
-            angle=((double)diff)/CYCLELIMIT;
-            angle*=PI/2;
-            angle+=PI/2;
+            fillCircle(350,250,149,BLACK);
+            drawCircle(350,250,150,GREEN);
+            drawVLine(350, 100, 300, GREEN) ;
+            drawHLine(200, 250, 300, GREEN) ;
+            int x= cycle_after[0]/6;
+            int y= cycle_after[1]/6;
+            int z= cycle_after[2]/6;
+            int b =(-2*y+2*x+2*z);
+            int a =-4;
+            int c=-3*y*y+x*x+z*z+593;
+            int s= (-(b)+ sqrt(b*b-4*a*c))/(2*a);
+             
+            
+            angle=acos(((double)(40*40-(s+x)*(s+x)-(s+z)*(s+z)))/(2*(s+z)*(s+x)));
+            
             
             // Draw bottom plot (multiply by 800)
-            int xcoord = magnitude*cos(angle)+300;
-            int ycoord = magnitude*sin(angle)+200;
+            int xcoord = magnitude*cos(angle)+350;
+            int ycoord = magnitude*sin(angle)+250;
             
 
             // Draw top plot
@@ -420,11 +403,11 @@ static PT_THREAD (protothread_serial(struct pt *pt))
         
         //sprintf(pt_serial_out_buffer, "input I if you want to tilt and U if you want to turn \r\n" );
         // serial_write ;
-        sprintf(pt_serial_out_buffer, "microphone readings: %d,%d,%d \r\n",cycle_detected[0],cycle_detected[1],cycle_detected[2] );
+        sprintf(pt_serial_out_buffer, "cycle detected: %d,%d,%d \r\n",cycle_detected[0],cycle_detected[1],cycle_detected[2] );
         serial_write ;
         sprintf(pt_serial_out_buffer, "turn readings : %d, \r\n",pwm_turn);
         serial_write ;
-        sprintf(pt_serial_out_buffer, "cycle readings : %f,%f,%f \r\n",microphone_reading[0]*conversion_factor,microphone_reading[1]*conversion_factor,microphone_reading[2]*conversion_factor);
+        sprintf(pt_serial_out_buffer, "microphone reading: %d,%d,%d \r\n",microphone_reading[0],microphone_reading[1],microphone_reading[2]);
         serial_write ;
 
         serial_read;
@@ -469,9 +452,15 @@ int main() {
     stdio_init_all();
     //Initialize ADC
     adc_init();
+    //initialize clock
+    //clocks_init();
     
-
-    
+    // initialize frequency to 1 microsecond(1Mz)
+    // clock_configure(clk_sys,
+                    // CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLKSRC_CLK_SYS_AUX,
+                    // CLOCKS_CLK_SYS_CTRL_AUXSRC_VALUE_CLKSRC_PLL_USB,
+                    //  MHZ,
+                    //   MHZ);
 
     //   // Make sure GPIO is high-impedance, no pullups etc
     adc_gpio_init(26);
@@ -481,10 +470,10 @@ int main() {
     // adc_fifo_setup(true,false,10,false,false);
     adc_set_round_robin	(7)	;
     adc_set_clkdiv (50000);
-    // gpio_init(26) ;
+     gpio_init(25) ;
     // gpio_init(27) ;
     // gpio_init(28) ;
-    // gpio_set_dir(26, GPIO_IN) ;
+     gpio_set_dir(25, GPIO_OUT) ;
     // gpio_set_dir(27, GPIO_IN) ;
     // gpio_set_dir(28, GPIO_IN) ;
     //struct repeating_timer timer;
