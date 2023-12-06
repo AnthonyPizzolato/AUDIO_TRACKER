@@ -57,7 +57,7 @@
 #define min(a,b) ((a<b) ? a:b)
 #define max(a,b) ((a<b) ? b:a)
 #define abs(a) ((a>0) ? a:-a)
-
+#define l2distance(x1,y1,x2,y2) sqrt((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2))
 // semaphore
 static struct pt_sem vga_semaphore ;
 
@@ -71,15 +71,22 @@ char screentext[40];
 #define WRAPVAL 50000
 #define CLKDIV  50.0
 #define PI 3.14159265359
-#define CYCLELIMIT 143
-#define THRESHOLD 1800
+#define CYCLELIMIT 133
+#define THRESHOLD 1950
+
+#define x1 -20
+#define y1 0
+#define x2 0
+#define y2 40
+#define x3 20
+#define y3 0
 
 //variables for motor control 
 uint slice_num ;
 volatile int old_controlTilt=0;
 volatile int old_control_turn=0;
-volatile int controlTurn=0;
-volatile int controlTilt=0;
+volatile int controlTurn=1000;
+volatile int controlTilt=1000;
 volatile int motor_dispTurn=0;
 volatile int motor_dispTilt=0;
 volatile uint16_t microphone_reading[3]; 
@@ -93,7 +100,12 @@ volatile int pwm_turn=0;
 volatile int num_detected=0;
 volatile int magnitude=100;
 volatile float angle= 0;
+volatile float lcos_value= 0;
+fix15 cmpercycle = float2fix15(.75);
+fix15 negtwo = int2fix15(-2);
 const float conversion_factor = 3.3f / (1 << 12);
+volatile int sweep =0;
+volatile int oldAngle=0;
 
 void on_pwm_wrap() {
 
@@ -106,19 +118,96 @@ void on_pwm_wrap() {
     if(old_controlTilt!=controlTilt){
         old_controlTilt=controlTilt;
     }
-        motor_dispTilt = motor_dispTilt + ((controlTilt - motor_dispTilt)>>4) ;
-        motor_dispTurn = motor_dispTurn + ((controlTurn - motor_dispTurn)>>4) ;
+        // motor_dispTilt = motor_dispTilt + ((controlTilt - motor_dispTilt)>>4) ;
+        // motor_dispTurn = motor_dispTurn + ((controlTurn - motor_dispTurn)>>4) ;
  
     // logic to control the pwm from the microphone
-    //20,000 - -20,000
-    int turn=cycle_after[0]-cycle_after[1];
-    turn +=CYCLELIMIT;
-    turn=(int)(turn*12.5);
-    turn+=1000;
-    pwm_turn=turn;
+              
+            int first_value=min(cycle_after[0],min(cycle_after[1],cycle_after[2]));
+            int first_one=0;
+            int second_one=0;
+            int second_value=0;
+            if(first_value==cycle_after[0]){
+                second_value=min(cycle_after[1],cycle_after[2]);
+            }
+            else if(first_value==cycle_after[1]){
+                second_value=min(cycle_after[0],cycle_after[2]);
+                first_one=1;
+            }
+            else {
+                second_value=min(cycle_after[0],cycle_after[1]);
+                first_one=2;
+            }
+            if(second_value==cycle_after[2]){
+                second_one=2;
+            }
+            else if(second_value==cycle_after[1]){
+                
+                second_one=1;
+            }
+           
+            int delay= first_value-second_value;
+            lcos_value=delay;
+            angle = asin((delay)*3 / (801.0) );
 
-    pwm_set_chan_level(slice_num, PWM_CHAN_B, controlTilt);
-    pwm_set_chan_level(slice_num, PWM_CHAN_A, pwm_turn);
+            if(first_value==0 &&second_value==1){
+                angle=PI/3 -angle;
+            }
+            if(second_value==0 &&first_value==1){
+                angle=PI/3 +angle;
+            }
+            if(first_value==1 &&second_value==2){
+                angle=2*PI/3+angle;
+            }
+            if(second_value==1 &&first_value==2){
+                angle=2*PI/3-angle;
+            }
+            if(first_value==0 &&second_value==2){
+                angle=-PI/3-angle;
+            }
+            if(second_value==0 &&first_value==2){
+                angle=-PI/3 +angle;
+             }
+            
+    //20,000 - -20,000
+    int turn=angle*3000 ;
+    if(angle!=oldAngle){
+        if(angle<0){
+            sweep=-1;
+        }
+        if (angle>0){
+            sweep=1;
+        }
+        oldAngle=angle;
+    }
+    turn+=3000;
+    pwm_turn=turn;
+    if (sweep==-1){
+        controlTurn=2000;
+        sweep--;
+    }
+    else if(sweep ==-2){
+        controlTurn=6500;
+        sweep--;
+    }
+    else if(sweep==-3){
+        controlTurn=4000;
+        sweep=0;
+    }
+    if(sweep==1){
+        controlTurn=12000;
+        sweep++;
+    }
+    else if(sweep ==2){
+        controlTurn=6500;
+        sweep++;
+    }
+    else if(sweep==3){
+        controlTurn=12000;
+        sweep=0;
+    }
+    pwm_set_chan_level(slice_num, PWM_CHAN_B, controlTurn);
+    pwm_set_chan_level(slice_num, PWM_CHAN_A, controlTilt );
     
 
 
@@ -134,7 +223,7 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
         bool gp26=false;
         bool gp27=false;
         bool gp28=false;
-        //cycle=0;
+        cycle=0;
         adc_set_round_robin	(7)	;
         while(!(gp26||gp27||gp28)){
             
@@ -150,43 +239,63 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
         first_cycle=cycle;
         int last_cycle=first_cycle+CYCLELIMIT;
         gpio_put(25, 0);
+        
         if(gp26&&gp27&&gp28){
             cycle_detected[0]=cycle;
             cycle_detected[1]=cycle;
             cycle_detected[2]=cycle;
+            gpio_put(15, !(gpio_get(15)));
+            gpio_put(14, !(gpio_get(14)));
+            gpio_put(13, !(gpio_get(13)));
         }
         else if(gp26&&gp27){
             cycle_detected[0]=cycle;
             cycle_detected[1]=cycle;
+            gpio_put(15, !(gpio_get(15)));
+            gpio_put(14, !(gpio_get(14)));
             adc_set_round_robin	(4)	;
             while(!gp28&&last_cycle>=cycle){
                     gp28=adc_read() >THRESHOLD;
                     cycle++;
                 }
                 cycle_detected[2]=cycle;
+                if(cycle_detected[2]<last_cycle){
+                    gpio_put(13, !(gpio_get(13)));
+                }
         }
         else if(gp26&&gp28){
             cycle_detected[0]=cycle;
             cycle_detected[2]=cycle;
+            gpio_put(15, !(gpio_get(15)));
+            gpio_put(13, !(gpio_get(13)));
             adc_set_round_robin	(2)	;
             while(!gp27&&last_cycle>=cycle){
                     gp27=adc_read() >THRESHOLD;
                     cycle++;
                 }
                 cycle_detected[1]=cycle;
+                if(cycle_detected[1]<last_cycle){
+                    gpio_put(14, !(gpio_get(14)));
+                }
         }
         else if(gp27&&gp28){
             cycle_detected[1]=cycle;
             cycle_detected[2]=cycle;
+            gpio_put(13, !(gpio_get(13)));
+            gpio_put(14, !(gpio_get(14)));
             adc_set_round_robin	(1)	;
             while(!gp26&&last_cycle>=cycle){
                     gp26=adc_read() >THRESHOLD;
                     cycle++;
                 }
                 cycle_detected[0]=cycle;
+                if(cycle_detected[0]<last_cycle){
+                    gpio_put(15, !(gpio_get(15)));
+                }
         }
         else if(gp26){
             cycle_detected[0]=cycle;
+            gpio_put(15, !(gpio_get(15)));
             adc_set_round_robin	(6)	;
             while(!(gp27||gp28)&&last_cycle>=cycle){
                 gp27=adc_read() >THRESHOLD;
@@ -196,9 +305,14 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
             if((gp27&&gp28)||last_cycle<cycle){
                 cycle_detected[1]=cycle;
                 cycle_detected[2]=cycle;
+                 if(cycle_detected[1]<last_cycle){
+                    gpio_put(14, !(gpio_get(14)));
+                    gpio_put(13, !(gpio_get(13)));
+                }
             }
             else if(gp27){
                 cycle_detected[1]=cycle;
+                gpio_put(14, !(gpio_get(14)));
                 adc_set_round_robin	(4)	;
                 while(!gp28&&last_cycle>=cycle){
                     
@@ -206,9 +320,13 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
                     cycle++;
                 }
                 cycle_detected[2]=cycle;
+                if(cycle_detected[2]<last_cycle){
+                    gpio_put(13, !(gpio_get(13)));
+                }
             }
             else{
                 cycle_detected[2]=cycle;
+                gpio_put(13, !(gpio_get(13)));
                 adc_set_round_robin	(2)	;
                 while(!gp27&&last_cycle>=cycle){
 
@@ -216,11 +334,16 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
                     cycle++;
                 }
                 cycle_detected[1]=cycle;
+                if(cycle_detected[1]<last_cycle){
+                    gpio_put(14, !(gpio_get(14)));
+                }
+                
             }
             
         }
         else if(gp27){
             cycle_detected[1]=cycle;
+            gpio_put(14, !(gpio_get(14)));
             adc_set_round_robin	(5)	;
             while(!(gp26||gp28)&&last_cycle>=cycle){
                 gp26=adc_read() >THRESHOLD;
@@ -230,9 +353,18 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
              if((gp26&&gp28)||last_cycle<cycle){
                 cycle_detected[0]=cycle;
                 cycle_detected[2]=cycle;
+              if(cycle_detected[2]<last_cycle){
+                    gpio_put(13, !(gpio_get(13)));
+                    
+                    gpio_put(15, !(gpio_get(15)));
+                
+                }
             }
             else if(gp26){
                 cycle_detected[0]=cycle;
+                
+                    gpio_put(15, !(gpio_get(15)));
+                
                 adc_set_round_robin	(4)	;
                 while(!gp28&&last_cycle>=cycle){
 
@@ -240,9 +372,13 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
                     cycle++;
                 }
                 cycle_detected[2]=cycle;
+                if(cycle_detected[2]<last_cycle){
+                    gpio_put(13, !(gpio_get(13)));
+                }
             }
             else{
                 cycle_detected[2]=cycle;
+                gpio_put(13, !(gpio_get(13)));
                 adc_set_round_robin	(1)	;
                 while(!gp26&&last_cycle>=cycle){
 
@@ -250,22 +386,31 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
                     cycle++;
                 }
                 cycle_detected[0]=cycle;
+                 if(cycle_detected[0]<last_cycle){
+                    gpio_put(15, !(gpio_get(15)));
+                }
             }
         }
         else{
             cycle_detected[2]=cycle;
+            gpio_put(13, !(gpio_get(13)));
             adc_set_round_robin	(3)	;
             while(!(gp26||gp27)&&last_cycle>=cycle){
                 gp26=adc_read() >THRESHOLD;
                 gp27=adc_read() >THRESHOLD;
                 cycle++;
             }
-              if((gp26&&gp27)||last_cycle<cycle){
+            if((gp26&&gp27)||last_cycle<cycle){
                 cycle_detected[0]=cycle;
                 cycle_detected[1]=cycle;
+                if(cycle_detected[0]<last_cycle){
+                    gpio_put(15, !(gpio_get(15)));
+                    gpio_put(14, !(gpio_get(14)));
+                }
             }
             else if(gp26){
                 cycle_detected[0]=cycle;
+                gpio_put(15, !(gpio_get(15)));
                 adc_set_round_robin	(2)	;
                 while(!gp27&&last_cycle>=cycle){
 
@@ -273,9 +418,13 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
                     cycle++;
                 }
                 cycle_detected[1]=cycle;
+                if(cycle_detected[1]<last_cycle){
+                    gpio_put(14, !(gpio_get(14)));
+                }
             }
             else{
                 cycle_detected[1]=cycle;
+                gpio_put(14, !(gpio_get(14)));
                 adc_set_round_robin	(1)	;
                 while(!gp26&&last_cycle>=cycle){
 
@@ -283,6 +432,9 @@ static PT_THREAD (protothread_gpio(struct pt *pt)) {
                     cycle++;
                 }
                 cycle_detected[0]=cycle;
+                if(cycle_detected[0]<last_cycle){
+                    gpio_put(15, !(gpio_get(15)));
+                }
             }
         }
         gpio_put(25, 1);
@@ -324,11 +476,11 @@ static PT_THREAD (protothread_vga(struct pt *pt))
     static int throttle ;
 
     // Draw the static aspects of the display
-    setTextSize(1) ;
-    setTextColor(WHITE);
-    setCursor(300, 50) ;
     
-    sprintf(screentext, "Sound direction tracking") ;
+    setTextColor(WHITE);
+    setCursor(210, 50) ;
+    setTextSize(3);
+    sprintf(screentext, "Soundar Tracking") ;
     writeString(screentext) ;
     // Draw bottom plot
 
@@ -337,7 +489,7 @@ static PT_THREAD (protothread_vga(struct pt *pt))
     drawCircle(350,250,150,GREEN);
     drawVLine(350, 100, 300, GREEN) ;
     drawHLine(200, 250, 300, GREEN) ;
-
+    fillRect(200,150,150, 300, BLACK) ;
     while (true) {
         // Wait on semaphore
         PT_SEM_WAIT(pt, &vga_semaphore);
@@ -356,24 +508,68 @@ static PT_THREAD (protothread_vga(struct pt *pt))
 
             // Erase a column
             fillCircle(350,250,149,BLACK);
-            drawCircle(350,250,150,GREEN);
+            //drawCircle(350,250,150,GREEN);
+           
             drawVLine(350, 100, 300, GREEN) ;
-            drawHLine(200, 250, 300, GREEN) ;
-            int x= cycle_after[0]/6;
-            int y= cycle_after[1]/6;
-            int z= cycle_after[2]/6;
-            int b =(-2*y+2*x+2*z);
-            int a =-4;
-            int c=-3*y*y+x*x+z*z+593;
-            int s= (-(b)+ sqrt(b*b-4*a*c))/(2*a);
-             
+            drawHLine(350, 250, 150, GREEN) ;
+            fillRect(200,100,150, 300, BLACK) ;
+            // THis way didn't work because sound does not travel linearly 
+            //Approach  using law of cosines 
+            // fix15 x= multfix15(int2fix15(cycle_after[0]),cmpercycle) ;
+            // fix15 y= multfix15(int2fix15(cycle_after[1]),cmpercycle) ;
+            // fix15 z= multfix15(int2fix15(cycle_after[2]),cmpercycle) ;
+            // float fx= fix2float15(x);
+            // float fy= fix2float15(y);
+            // float fz= fix2float15(z);
             
-            angle=acos(((double)(40*40-(s+x)*(s+x)-(s+z)*(s+z)))/(2*(s+z)*(s+x)));
+            // fix15 a =int2fix15(-2);
+            // fix15 b =multfix15(negtwo,y)+ multfix15(negtwo,x) +multfix15(negtwo,z);
+            // fix15 c=int2fix15(40*40+40*40-40*40)-multfix15(y,y)+multfix15(multfix15(int2fix15(-4),x),z);
+            // fix15 d=multfix15(int2fix15(40*40),x) +multfix15(int2fix15(40*40),z)-multfix15(int2fix15(40*40),y);
+            //     d+=-1*multfix15(x,multfix15(z,z))-multfix15(x,multfix15(y,y))-multfix15(z,multfix15(x,x))-multfix15(z,multfix15(y,y));
+            //     d+=multfix15(y,multfix15(x,x))+multfix15(y,multfix15(y,y));
+
+            // // setup for cubic formula
+            // fix15 p = divfix(-1*b,multfix15(int2fix15(3),a));
+            // fix15 q = multfix15(p,multfix15(p,p)) + divfix(multfix15(b,c)-multfix15(int2fix15(3),multfix15(a,d) ) ,(multfix15(int2fix15(6),multfix15(a,a))));
+            // fix15 r = divfix(c,multfix15(3,a));
+
+            //angle=acos(lcos_value);
+            // float s= cbrt(float2fix15(q) + sqrt(fix2float15(multfix15(q,q)) + pow(fix2float15(r-multfix15(p,p)),3))); 
+            //     s+= cbrt(float2fix15(q)- sqrt(fix2float15(multfix15(q,q)) + pow(fix2float15(r-multfix15(p,p)),3))) +fix2float15(p);
+            // lcos_value=((40*40-(s+fx)*(s+fx)-(s+fz)*(s+fz)))/(2*(s+fz)*(s+fx));
+
+
+            ///Approach using the logic that the group that bruce told us to look at 
+  
+
+            // Approach using the greedy method of 
+            // int targetloss= (cycle_after[0]-cycle_after[1])*(cycle_after[0]-cycle_after[1])+(cycle_after[1]-cycle_after[2])*(cycle_after[1]-cycle_after[2]);
+            
+            // long long  minLoss =100000000000;
+            // int minX=0;
+            // int minY=0;
+            // for(int x=-200; x<200;x++){
+            //     for(int y=-200;y<200;y++){
+            //         int d1=l2distance(x1,y1,x,y);
+            //         int d2=l2distance(x2,y2,x,y);
+            //         int d3=l2distance(x3,y3,x,y);
+            //         long long  loss= abs(targetloss-((long)d1-d2)*(d1-d2)+(d2-d3)*(d2-d3));
+            //         if(loss<minLoss){
+            //             minLoss=loss;
+            //             minX=x;
+            //             minY=y;
+            //         }
+            //     }
+            // }
+            //angle +=PI/2;
             
             
             // Draw bottom plot (multiply by 800)
-            int xcoord = magnitude*cos(angle)+350;
+           int xcoord = magnitude*cos(angle)+350;
             int ycoord = magnitude*sin(angle)+250;
+            //  int xcoord = minX+350;
+            // int ycoord = minY+250;
             
 
             // Draw top plot
@@ -382,12 +578,13 @@ static PT_THREAD (protothread_vga(struct pt *pt))
                 // Read the IMU
            
             // Update horizontal cursor
-            
+        
         }
     }
     // Indicate end of thread
     PT_END(pt);
 }
+
 
 
 // User input thread. User can change draw speed
@@ -405,7 +602,7 @@ static PT_THREAD (protothread_serial(struct pt *pt))
         // serial_write ;
         sprintf(pt_serial_out_buffer, "cycle detected: %d,%d,%d \r\n",cycle_detected[0],cycle_detected[1],cycle_detected[2] );
         serial_write ;
-        sprintf(pt_serial_out_buffer, "turn readings : %d, \r\n",pwm_turn);
+        sprintf(pt_serial_out_buffer, "angle : %f, quad_value %f \r\n",angle,lcos_value);
         serial_write ;
         sprintf(pt_serial_out_buffer, "microphone reading: %d,%d,%d \r\n",microphone_reading[0],microphone_reading[1],microphone_reading[2]);
         serial_write ;
@@ -431,6 +628,16 @@ static PT_THREAD (protothread_serial(struct pt *pt))
             sscanf(pt_serial_in_buffer,"%d", &test_in) ;
             controlTurn=test_in;
         }
+        if(classifier=='s'||classifier=='s'){
+            sprintf(pt_serial_out_buffer, "enter a tilt constant  (~1000-6500): \r\n");
+            serial_write ;
+            // spawn a thread to do the non-blocking serial read
+            serial_read ;
+            // convert input string to number
+            sscanf(pt_serial_in_buffer,"%d", &test_in) ;
+            classifier="e";
+            sweep=test_in;
+        }
 
 
         //yield in case we add any more threads on the core
@@ -447,6 +654,7 @@ void core1_entry() {
 
 
 int main() {
+    initVGA() ;
     set_sys_clock_khz(250000,true);
     // Initialize stdio
     stdio_init_all();
@@ -471,9 +679,15 @@ int main() {
     adc_set_round_robin	(7)	;
     adc_set_clkdiv (50000);
      gpio_init(25) ;
-    // gpio_init(27) ;
-    // gpio_init(28) ;
+    
      gpio_set_dir(25, GPIO_OUT) ;
+    
+     gpio_init(15) ;
+     gpio_init(14) ;
+     gpio_init(13) ;
+      gpio_set_dir(15, GPIO_OUT) ;
+     gpio_set_dir(14, GPIO_OUT) ;
+     gpio_set_dir(13, GPIO_OUT) ;
     // gpio_set_dir(27, GPIO_IN) ;
     // gpio_set_dir(28, GPIO_IN) ;
     //struct repeating_timer timer;
@@ -504,8 +718,8 @@ int main() {
     pwm_set_clkdiv(slice_num, CLKDIV) ;
 
     // This sets duty cycle
-    pwm_set_chan_level(slice_num, PWM_CHAN_B, 0);
-    pwm_set_chan_level(slice_num, PWM_CHAN_A, 0);
+    pwm_set_chan_level(slice_num, PWM_CHAN_B, 0000);
+    pwm_set_chan_level(slice_num, PWM_CHAN_A, 0000);
 
     // Start the channel
     pwm_set_mask_enabled((1u << slice_num));
@@ -515,7 +729,7 @@ int main() {
     ///////////////////////////// ROCK AND ROLL ////////////////////////////
     ////////////////////////////////////////////////////////////////////////
     // Initialize VGA
-    initVGA() ;
+    
     // start core 1 
     multicore_reset_core1();
     multicore_launch_core1(core1_entry);
